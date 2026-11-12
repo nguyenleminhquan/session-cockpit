@@ -5,13 +5,17 @@ import type { Agent, Finder, Hud, Limit, Session, Turn } from '../types'
 
 type Dollar = Parameters<Hook<'turn.complete'>>[0]
 
+const TITLE = '◆ COCKPIT'
 const PANE = 'cockpit-agents'
 const PANE_TITLE = 'Subagents'
 const FINDER = 'cockpit-sessions'
 const FINDER_TITLE = 'Sessions'
 const FOUND_MAX = 30
 const SEARCH_TIMEOUT_MS = 20_000
-const BAR_CELLS = 14
+const BAR_CELLS_MIN = 10
+// Border and padding of the band's box, both sides.
+const BAND_FRAME = 4
+const BAND_GAP = 2
 const KEPT_AGENTS = 20
 const NOTIFY_AFTER_MS = 60_000
 const CHEAP_MODEL = /sonnet|haiku/i
@@ -63,10 +67,10 @@ const BLOCK = 'Chặn'
 const TO_SONNET = 'Đổi sang Sonnet'
 const KEEP = 'Giữ nguyên'
 
-const bar = (percent: number): string => {
-  const filled = Math.round((Math.min(100, Math.max(0, percent)) / 100) * BAR_CELLS)
+const bar = (percent: number, cells: number): string => {
+  const filled = Math.round((Math.min(100, Math.max(0, percent)) / 100) * cells)
 
-  return '█'.repeat(filled) + '░'.repeat(BAR_CELLS - filled)
+  return '█'.repeat(filled) + '░'.repeat(cells - filled)
 }
 
 const heat = (percent: number): string =>
@@ -654,6 +658,21 @@ export const register: Register = on => {
     const info = await read($, hud)
     const { Box, Text } = $.ui.resolve(e)
     const percent = info?.percent ?? null
+    const limits = (info?.limits ?? []).map(limit => ({
+      label: LIMIT_LABELS[limit.kind] ?? limit.kind,
+      percent: limit.percent,
+    }))
+    // The context bar takes whatever the row's other pieces leave, so the band fills its width.
+    const others = [
+      TITLE,
+      info?.folder ?? '',
+      info !== null && info.branch !== null ? `⎇ ${info.branch}` : '',
+      `CTX  ${percent ?? 0}%`,
+      ...limits.map(limit => `${limit.label} ${limit.percent}%`),
+    ].filter(piece => piece !== '')
+    const taken =
+      others.reduce((sum, piece) => sum + piece.length, 0) + BAND_GAP * (others.length - 1)
+    const cells = Math.max(BAR_CELLS_MIN, e.props.bodyColumns - BAND_FRAME - taken)
 
     return (
       <Box
@@ -664,7 +683,7 @@ export const register: Register = on => {
       >
         <Box gap={2}>
           <Text bold color="cyan">
-            ◆ COCKPIT
+            {TITLE}
           </Text>
           {info !== null && <Text bold>{info.folder}</Text>}
           {info !== null && info.branch !== null && (
@@ -673,16 +692,16 @@ export const register: Register = on => {
           {percent !== null && (
             <Text>
               <Text dimColor>CTX </Text>
-              <Text color={heat(percent)}>{bar(percent)}</Text>
+              <Text color={heat(percent)}>{bar(percent, cells)}</Text>
               <Text bold color={heat(percent)}>
                 {' '}
                 {percent}%
               </Text>
             </Text>
           )}
-          {(info?.limits ?? []).map(limit => (
+          {limits.map(limit => (
             <Text>
-              <Text dimColor>{LIMIT_LABELS[limit.kind] ?? limit.kind} </Text>
+              <Text dimColor>{limit.label} </Text>
               <Text color={heat(limit.percent)}>{limit.percent}%</Text>
             </Text>
           ))}
