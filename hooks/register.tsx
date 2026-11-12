@@ -1,12 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register, Timer } from 'claude-code'
 
-import type { Agent, Hud, Limit, Turn } from '../types'
+import type { Agent, Finder, Hud, Limit, Session, Turn } from '../types'
 
 type Dollar = Parameters<Hook<'turn.complete'>>[0]
 
 const PANE = 'cockpit-agents'
 const PANE_TITLE = 'Subagents'
+const FINDER = 'cockpit-sessions'
+const FINDER_TITLE = 'Sessions'
+const FOUND_MAX = 30
+const SEARCH_TIMEOUT_MS = 20_000
 const BAR_CELLS = 14
 const KEPT_AGENTS = 20
 const NOTIFY_AFTER_MS = 60_000
@@ -22,6 +26,10 @@ const last = atom({ plugin: 'session-cockpit', key: 'last' } as const, null, {
 })
 const agents = atom({ plugin: 'session-cockpit', key: 'agents' } as const, [], {
   shape: 'agents-1',
+})
+const NO_SEARCH: Finder = { query: '', isSearching: false, found: [] }
+const finder = atom({ plugin: 'session-cockpit', key: 'finder' } as const, NO_SEARCH, {
+  shape: 'finder-1',
 })
 const now = atom({ plugin: 'session-cockpit', key: 'now' } as const, 0)
 const spawnedCount = atom(
@@ -128,6 +136,170 @@ const refreshHud = async ($: Dollar): Promise<Hud> => {
   return fresh
 }
 
+const age = (ms: number): string => {
+  const minutes = Math.max(0, Math.round(ms / 60_000))
+
+  if (minutes < 60) {
+    return `${minutes}p`
+  }
+
+  return minutes < 60 * 24
+    ? `${Math.round(minutes / 60)}g`
+    : `${Math.round(minutes / (60 * 24))}n`
+}
+
+const projectsDir = async ($: Dollar): Promise<string> => {
+  const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '~'
+
+  return `${home.replace(/\\/g, '/')}/.claude/projects`
+}
+
+const unescape = (raw: string): string => {
+  try {
+    return JSON.parse(`"${raw}"`) as string
+  } catch {
+    return raw
+  }
+}
+
+// `git grep --no-index` is the one fast text search every machine here has.
+const grep = async ($: Dollar, dir: string, args: readonly string[]): Promise<string[]> => {
+  try {
+    const ran = await $.process.run(['git', 'grep', '--no-index', ...args], {
+      cwd: dir,
+      timeoutMs: SEARCH_TIMEOUT_MS,
+    })
+
+    return ran.stdout.split('\n').filter(line => line !== '')
+  } catch {
+    return []
+  }
+}
+
+const findSessions = async ($: Dollar, query: string): Promise<Session[]> => {
+  const dir = await projectsDir($)
+  let wanted: Set<string> | null = null
+  let projects: string[]
+
+  if (query === '') {
+    projects = (await $.fs.list(dir).catch(() => []))
+      .filter(entry => entry.kind === 'dir')
+      .map(entry => entry.name)
+  } else {
+    const hits = await grep($, dir, ['-l', '-i', '-F', '-e', query, '--', '*.jsonl'])
+    // A subagent's transcript sits under its session's folder: same key.
+    const keys = hits.map(hit => {
+      const [project = '', second = ''] = hit.split('/')
+
+      return `${project}/${second.replace(/\.jsonl$/, '')}`
+    })
+    wanted = new Set(keys)
+    projects = [...new Set(keys.map(key => key.split('/')[0] ?? ''))]
+  }
+
+  const listed = await Promise.all(
+    projects.map(async project => {
+      const entries = await $.fs.list(`${dir}/${project}`).catch(() => [])
+
+      return entries
+        .filter(entry => entry.kind === 'file' && entry.name.endsWith('.jsonl'))
+        .map(
+          (entry): Session => ({
+            id: entry.name.replace(/\.jsonl$/, ''),
+            project,
+            cwd: null,
+            title: null,
+            mtimeMs: entry.mtimeMs,
+          }),
+        )
+    }),
+  )
+  const found = listed
+    .flat()
+    .filter(one => wanted === null || wanted.has(`${one.project}/${one.id}`))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, FOUND_MAX)
+
+  if (found.length === 0) {
+    return found
+  }
+
+  const files = found.map(one => `${one.project}/${one.id}.jsonl`)
+  const aiTitles = new Map<string, string>()
+  const ownTitles = new Map<string, string>()
+  const cwds = new Map<string, string>()
+  const titleLines = await grep($, dir, [
+    '-o',
+    '-E',
+    '"(aiTitle|customTitle)":"[^"]*"',
+    '--',
+    ...files,
+  ])
+  const cwdLines = await grep($, dir, ['-m', '1', '-o', '-E', '"cwd":"[^"]*"', '--', ...files])
+
+  for (const line of titleLines) {
+    const match = /^(.*?\.jsonl):"(aiTitle|customTitle)":"(.*)"$/.exec(line)
+
+    if (match !== null) {
+      const titles = match[2] === 'customTitle' ? ownTitles : aiTitles
+      titles.set(match[1] ?? '', unescape(match[3] ?? ''))
+    }
+  }
+
+  for (const line of cwdLines) {
+    const match = /^(.*?\.jsonl):"cwd":"(.*)"$/.exec(line)
+
+    if (match !== null) {
+      cwds.set(match[1] ?? '', unescape(match[2] ?? ''))
+    }
+  }
+
+  return found.map(one => {
+    const file = `${one.project}/${one.id}.jsonl`
+
+    // A title the person set wins over a generated one.
+    return {
+      ...one,
+      title: ownTitles.get(file) ?? aiTitles.get(file) ?? null,
+      cwd: cwds.get(file) ?? null,
+    }
+  })
+}
+
+const search = async ($: Dollar, query: string): Promise<void> => {
+  const text = query.trim()
+  await update($, finder, held => ({ ...held, query: text, isSearching: true }))
+  const found = await findSessions($, text).catch(() => [])
+  await update($, finder, () => ({ query: text, isSearching: false, found }))
+}
+
+// Opens the session in a new Windows Terminal tab; elsewhere it hands over the command.
+const resume = async ($: Dollar, one: Session): Promise<void> => {
+  const cwd = one.cwd ?? (await $.session.cwd())
+
+  try {
+    const ran = await $.process.run(
+      ['wt.exe', '-w', '0', 'nt', '-d', cwd, 'claude', '--resume', one.id],
+      { timeoutMs: 10_000 },
+    )
+
+    if (ran.exitCode === 0) {
+      void $.ui.toast(`Đã mở tab mới: ${one.title ?? one.id}`)
+
+      return
+    }
+  } catch {
+    // No Windows Terminal here: fall through to the clipboard.
+  }
+
+  const copied = await $.ui.copy({ text: `cd "${cwd}" && claude --resume ${one.id}` })
+  void $.ui.toast(
+    copied.isCopied
+      ? 'Không mở được tab mới; đã copy lệnh resume vào clipboard'
+      : `Không mở được tab mới: claude --resume ${one.id}`,
+  )
+}
+
 export const register: Register = on => {
   let mainTools = 0
   let mainFiles = new Set<string>()
@@ -137,6 +309,11 @@ export const register: Register = on => {
     await $.command.register({
       name: 'cockpit',
       description: 'Mở pane subagent và tóm tắt các rule đang chặn',
+    })
+    await $.command.register({
+      name: 'sessions',
+      description: 'Tìm session Claude ở mọi project và mở lại trong tab mới',
+      argumentHint: '[từ khóa]',
     })
     const started = await next(e)
     await refreshHud($).catch(() => undefined)
@@ -157,6 +334,17 @@ export const register: Register = on => {
     ]
 
     return { text: lines.join('\n') }
+  })
+
+  on('command.run', { command: 'sessions' }, async ($, e) => {
+    await $.ui
+      .open({ id: FINDER, title: FINDER_TITLE, focus: true, closeOnEscape: true })
+      .catch(() => undefined)
+    await search($, e.args)
+    const { found } = await read($, finder)
+    const scope = e.args.trim() === '' ? ' gần đây' : ''
+
+    return { text: `Tìm thấy ${found.length} session${scope}.` }
   })
 
   on('prompt.submit', ($, e, next) => {
@@ -384,6 +572,42 @@ export const register: Register = on => {
             </Box>
           )
         })}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: FINDER }, async ($, e) => {
+    const { Box, Text, Input, Button } = $.ui.resolve(e)
+    const held = await read($, finder)
+    const time = await $.clock.now()
+    const room = Math.max(12, e.props.bodyColumns - 30)
+    const scope = held.query === '' ? ' gần đây' : ''
+
+    return (
+      <Box flexDirection="column">
+        <Input
+          key="q"
+          label="⌕ "
+          placeholder="từ khóa, Enter để tìm ở mọi project"
+          value={held.query}
+          submitLabel="tìm"
+          autoFocus
+          onSubmit={value => void search($, value)}
+        />
+        <Text dimColor>
+          {held.isSearching
+            ? 'đang tìm…'
+            : `${held.found.length} session${scope} · Tab để chọn, Enter mở tab mới`}
+        </Text>
+        {held.found.map(one => (
+          <Button key={one.id} plain onPress={() => void resume($, one)}>
+            <Text color="cyan">
+              {(one.cwd?.split(/[\\/]/).filter(Boolean).pop() ?? one.project).slice(0, 18)}
+            </Text>
+            <Text> {(one.title ?? one.id).slice(0, room)} </Text>
+            <Text dimColor>{age(time - one.mtimeMs)}</Text>
+          </Button>
+        ))}
       </Box>
     )
   })

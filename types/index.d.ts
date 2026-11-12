@@ -14,6 +14,14 @@ export type Hud = {
   usd: number | null
   limits: Limit[]
 }
+export type Session = {
+  id: string
+  project: string
+  cwd: string | null
+  title: string | null
+  mtimeMs: number
+}
+export type Finder = { query: string; isSearching: boolean; found: Session[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -23,6 +31,7 @@ declare module 'claude-code' {
       spawnedCount: number
       hud: Shaped<Hud | null>
       now: number
+      finder: Shaped<Finder>
     }
   }
 }

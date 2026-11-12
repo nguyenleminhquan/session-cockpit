@@ -7,6 +7,7 @@ A Claude Code mod that turns the terminal session into a small cockpit.
 - **HUD above the prompt**: folder, git branch, context-window bar, 5-hour and 7-day rate limits, and the last turn's duration, tool calls and edited files.
 - **Colored tool calls**: a gutter mark per tool kind (blue = read/search, yellow = file edits, magenta = shell, red = risky command or error, cyan = subagent).
 - **Subagent pane**: one live row per subagent with its model and elapsed time. Opens on the first spawn; `/cockpit` opens it at any width.
+- **Session finder**: `/sessions [keyword]` searches the transcripts of every project (full text, via `git grep`) and lists the hits with title, folder and age; Enter on one reopens it with `claude --resume` in a new Windows Terminal tab (elsewhere it copies the resume command).
 - **Quiet diffs**: Edit/Write results show one `+N −M` line; ctrl+o still shows the full diff.
 - **Guards**: asks before `git push`, cluster-mutating `kubectl`/`helm`/`helmfile`, and `tofu`/`terraform apply|destroy`; asks before spawning a subagent that is not on Sonnet or Haiku.
 - **Notification** when a turn longer than 60 seconds finishes.

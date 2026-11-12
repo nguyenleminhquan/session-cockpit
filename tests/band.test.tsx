@@ -119,3 +119,50 @@ test('the pane lists a subagent and marks it done when its turn ends', async ($,
   expect((await ui.find({ type: 'Text', text: /✓/ }))?.text).toBe('✓')
   await ui.unmount()
 })
+
+test('/sessions searches every project and lists the hit with its title', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('clock.now', () => ({ value: 3_600_000 }))
+  on('env.get', () => ({ value: 'C:/Users/me' }))
+  on('fs.list', () => ({
+    value: [{ name: 's1.jsonl', kind: 'file', size: 1, mtimeMs: 0, isLink: false }],
+  }))
+  on('process.run', (_, e) => {
+    const argv = e.argv.join(' ')
+    const stdout = argv.includes(' -l ')
+      ? 'proj-a/s1.jsonl\n'
+      : argv.includes('aiTitle')
+        ? 'proj-a/s1.jsonl:"aiTitle":"So sánh Jira"\n'
+        : 'proj-a/s1.jsonl:"cwd":"C:\\work\\jira"\n'
+
+    return {
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+
+  await $.command.run({
+    command: 'sessions',
+    args: 'openproject',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'session-cockpit',
+    component: 'Pane',
+    requestId: 'cockpit-sessions',
+    surface: 'terminal',
+    props: {
+      title: 'Sessions',
+      isFocused: true,
+      bodyColumns: 80,
+      placement: 'dock',
+      scroll: { offset: 0, bodyRows: 20 },
+      view: {},
+    },
+  })
+  expect((await ui.find({ type: 'Text', text: /So sánh Jira/ }))?.text).toContain('So sánh Jira')
+  expect((await ui.find({ type: 'Text', text: /^jira$/ }))?.text).toBe('jira')
+  expect((await ui.find({ type: 'Text', text: /^1g$/ }))?.text).toBe('1g')
+  await ui.unmount()
+})
