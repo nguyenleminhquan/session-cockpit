@@ -441,7 +441,14 @@ export const register: Register = on => {
       await update($, agents, list => [...list, one].slice(-KEPT_AGENTS))
       await update($, spawnedCount, count => count + 1)
       await update($, now, () => startedAt)
-      void $.ui.open({ id: PANE, title: PANE_TITLE }).catch(() => undefined)
+      const hasTerminal = await $.session
+        .surfaces()
+        .then(surfaces => surfaces.includes('terminal'))
+        .catch(() => false)
+
+      if (hasTerminal) {
+        void $.ui.open({ id: PANE, title: PANE_TITLE }).catch(() => undefined)
+      }
 
       // One ticker redraws the elapsed times; it stops itself when all are done.
       tick ??= $.clock.every(1000, () => {
@@ -499,6 +506,11 @@ export const register: Register = on => {
 
   // A colored gutter per tool kind, so a glance tells reads from writes from shell.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    // Terminal only: the desktop app keeps its own look.
+    if (e.surface !== 'terminal') {
+      return next(e)
+    }
+
     const { tool, input, isErrored } = e.props
     const row = await next(e)
     const { Box, Text } = $.ui.resolve(e)
@@ -513,6 +525,11 @@ export const register: Register = on => {
 
   // Replaces the diff under Edit/Write rows with one line; ctrl+o still shows it.
   on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
+    // Terminal only: the desktop app keeps its own look.
+    if (e.surface !== 'terminal') {
+      return next(e)
+    }
+
     const { tool, output, isErrored, isExpanded } = e.props
     const isFileChange = tool === 'Edit' || tool === 'Write'
 
@@ -539,7 +556,12 @@ export const register: Register = on => {
     )
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // Terminal only: the desktop app keeps its own look.
+    if (e.surface !== 'terminal') {
+      return next(e)
+    }
+
     const { Box, Text } = $.ui.resolve(e)
     const list = await read($, agents)
     const time = await read($, now)
@@ -576,7 +598,12 @@ export const register: Register = on => {
     )
   })
 
-  on('ui.render', { component: 'Pane', requestId: FINDER }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: FINDER }, async ($, e, next) => {
+    // Terminal only: the desktop app keeps its own look.
+    if (e.surface !== 'terminal') {
+      return next(e)
+    }
+
     const { Box, Text, Input, Button } = $.ui.resolve(e)
     const held = await read($, finder)
     const time = await $.clock.now()
@@ -613,6 +640,11 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    // Terminal only: the desktop app keeps its own look.
+    if (e.surface !== 'terminal') {
+      return next(e)
+    }
+
     if (e.props.hasSurvey) {
       return next(e)
     }
