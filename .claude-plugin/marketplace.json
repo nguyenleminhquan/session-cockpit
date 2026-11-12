@@ -1,0 +1,5 @@
+{
+  "name": "session-cockpit",
+  "owner": { "name": "nguyenleminhquan" },
+  "plugins": [{ "name": "session-cockpit", "source": "./" }]
+}

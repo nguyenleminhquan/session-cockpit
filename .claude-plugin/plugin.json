@@ -1,0 +1,6 @@
+{
+  "name": "session-cockpit",
+  "version": "0.1.0",
+  "description": "Notifies when a long turn ends, shows running subagents above the prompt, and asks before costly subagents or risky commands.",
+  "types": "./types/index.d.ts"
+}
